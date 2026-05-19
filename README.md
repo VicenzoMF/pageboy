@@ -72,15 +72,46 @@ Restart Claude Code. Tools available:
 
 ```
 pageboy add <url> [-c <collection>] [--no-embed]
+                   [-r|--recursive] [--max-depth N] [--max-pages N]
+                   [--cross-origin] [--delay-ms N]
+                   [--include <regex>] [--exclude <regex>]
 pageboy list [-c <collection>]
 pageboy collections
 pageboy search <query...> [-m fts|vector|hybrid] [-c <collection>] [-n <limit>]
+                          [--rerank] [--rerank-model <id>]
 pageboy refresh <id|--all> [-c <collection>] [--no-embed]
 pageboy embed [-c <collection>]
 pageboy serve            # start MCP server on stdio
 ```
 
 Add `--db <path>` to any command to target a different SQLite file.
+
+## Recursive crawl
+
+```bash
+# Index up to 50 pages, depth 2, staying on the same origin
+pageboy add https://example.com/docs --recursive --max-depth 2 --max-pages 50
+
+# Limit by URL pattern
+pageboy add https://example.com/docs -r \
+  --include '^https://example\.com/docs/(api|guides)/' \
+  --exclude '\\.(png|jpg)$'
+```
+
+Each page is fetched, extracted with Readability, chunked, and indexed.
+Same-origin is the default; pass `--cross-origin` to follow external links.
+
+## Reranking
+
+Add `--rerank` to a search to apply a cross-encoder over the top candidates
+(default: `Xenova/ms-marco-MiniLM-L-6-v2`, ~80 MB, downloaded on first use):
+
+```bash
+pageboy search "how does the auth token rotate" --rerank
+```
+
+For the MCP server, set `PAGEBOY_RERANK=1` in the environment to rerank on
+every call.
 
 ## Collections
 
@@ -174,20 +205,29 @@ changed, only `fetched_at` is updated, no chunks are touched.
 ## Architecture
 
 ```
-URL ─► fetch ─► JSDOM + Readability ─► chunk ──┐
-                                                ├─► SQLite (FTS5)
-                                                └─► sqlite-vec (optional)
-                                                       ▲
-                                              embeddings provider
-                                              (OpenAI / Ollama / Transformers.js)
+URL ─► fetch ─► JSDOM + Readability ─► section-aware chunk ──┐
+                                                              ├─► SQLite (FTS5)
+                                                              └─► sqlite-vec (optional)
+                                                                     ▲
+                                                          embeddings provider
+                                                       (OpenAI / Ollama / Transformers.js)
+
+                                  search ─► FTS + vector ─► RRF ─► [cross-encoder rerank]
 ```
 
-- **Chunking:** ~1400 chars, splits on paragraph boundaries, falls back to
-  sentence splits for long paragraphs.
+- **Chunking:** walks the Readability HTML, tracks H1/H2/H3 path, prefixes each
+  chunk with `Title > H2 > H3` so both FTS and embeddings get section context.
+  Soft target ~1400 chars, breaks on paragraph boundaries, sentence-splits long
+  paragraphs.
 - **FTS5:** unicode61 tokenizer with diacritic folding. BM25 ranking.
 - **Vector store:** `vec0` virtual table from sqlite-vec. Embeddings stored as
   raw `FLOAT[dim]` blobs.
 - **Hybrid:** RRF (k=60) over the top-N FTS hits and top-N vector hits.
+- **Reranker (optional):** Transformers.js cross-encoder
+  (`Xenova/ms-marco-MiniLM-L-6-v2` by default) over the top 4× candidates.
+  Toggle with `--rerank` on the CLI or `PAGEBOY_RERANK=1` for the MCP server.
+- **Recursive crawl:** opt-in BFS (`--recursive`) with `--max-depth`, `--max-pages`,
+  same-origin by default, `--delay-ms`, and `--include`/`--exclude` regex filters.
 - **Migrations:** `PRAGMA user_version` controls schema versions; old DBs are
   migrated forward on open.
 
@@ -202,15 +242,23 @@ URL ─► fetch ─► JSDOM + Readability ─► chunk ──┐
 | `OPENAI_API_KEY` | — | OpenAI auth (also gates auto-detection) |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoints |
 | `OLLAMA_HOST` / `OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama base URL |
+| `PAGEBOY_RERANK` | — | Set to `1` to enable cross-encoder reranking on every search |
+| `PAGEBOY_RERANK_MODEL` | `Xenova/ms-marco-MiniLM-L-6-v2` | Reranker model id (Transformers.js) |
 
 ## Limitations
 
 - One writer at a time (SQLite WAL). Fine for personal use, not for shared
   servers.
-- No incremental crawling — `add <url>` indexes one page. Recursion / sitemap
-  parsing isn't implemented.
+- Fetches static HTML only (no headless browser). SPAs and pages behind
+  Cloudflare challenges may extract poorly. Pre-rendered docs (Next.js SSG,
+  Stripe, Hugo, etc.) work well.
+- Recursive crawl is BFS over anchor tags; it does not parse sitemaps and
+  ignores `robots.txt`. Use `--include`/`--exclude` and `--max-pages` to keep
+  it polite.
 - Embeddings are computed once per chunk; switching providers/models with
   different dims requires re-embedding (or a fresh DB).
+- The cross-encoder reranker downloads ~80 MB on first use and adds
+  ~50–200 ms per query.
 
 ## License
 

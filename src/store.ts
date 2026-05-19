@@ -23,6 +23,12 @@ export interface Chunk {
   doc_id: number;
   idx: number;
   text: string;
+  section_path: string | null;
+}
+
+export interface ChunkInput {
+  text: string;
+  section_path: string | null;
 }
 
 export interface SearchHit {
@@ -33,9 +39,11 @@ export interface SearchHit {
   collection: string;
   idx: number;
   text: string;
+  section_path: string | null;
   fts_score: number | null;
   vec_distance: number | null;
   fused_score: number;
+  rerank_score?: number;
   source: "fts" | "vector" | "hybrid";
 }
 
@@ -89,6 +97,10 @@ export class Store {
     if (current < 2) {
       this.migrateToV2();
       this.db.pragma("user_version = 2");
+    }
+    if (current < 3) {
+      this.migrateToV3();
+      this.db.pragma("user_version = 3");
     }
   }
 
@@ -176,6 +188,15 @@ export class Store {
     `);
   }
 
+  private migrateToV3() {
+    const cols = this.db.prepare(`PRAGMA table_info(chunks)`).all() as {
+      name: string;
+    }[];
+    if (!cols.some((c) => c.name === "section_path")) {
+      this.db.exec(`ALTER TABLE chunks ADD COLUMN section_path TEXT`);
+    }
+  }
+
   // ---------- meta ----------
 
   private getMeta(key: string): string | null {
@@ -243,7 +264,7 @@ export class Store {
     byline: string | null;
     site_name: string | null;
     collection?: string;
-    chunks: string[];
+    chunks: ChunkInput[];
   }): UpsertResult {
     const collection = input.collection ?? DEFAULT_COLLECTION;
     const fetched_at = new Date().toISOString();
@@ -266,7 +287,7 @@ export class Store {
     }
 
     const insertChunk = this.db.prepare(
-      `INSERT INTO chunks (doc_id, idx, text) VALUES (?, ?, ?)`,
+      `INSERT INTO chunks (doc_id, idx, text, section_path) VALUES (?, ?, ?, ?)`,
     );
 
     const tx = this.db.transaction(() => {
@@ -304,7 +325,9 @@ export class Store {
           );
         docId = Number(info.lastInsertRowid);
       }
-      input.chunks.forEach((text, i) => insertChunk.run(docId, i, text));
+      input.chunks.forEach((c, i) =>
+        insertChunk.run(docId, i, c.text, c.section_path),
+      );
       return docId;
     });
 
@@ -356,7 +379,7 @@ export class Store {
     params.push(limit);
     return this.db
       .prepare(
-        `SELECT c.id, c.doc_id, c.idx, c.text
+        `SELECT c.id, c.doc_id, c.idx, c.text, c.section_path
          FROM chunks c
          JOIN docs d ON d.id = c.doc_id
          WHERE NOT EXISTS (SELECT 1 FROM vec_chunks v WHERE v.chunk_id = c.id)${where}
@@ -399,7 +422,10 @@ export class Store {
       .get(id) as Doc | undefined;
     if (!doc) return null;
     const chunks = this.db
-      .prepare(`SELECT * FROM chunks WHERE doc_id = ? ORDER BY idx`)
+      .prepare(
+        `SELECT id, doc_id, idx, text, section_path
+         FROM chunks WHERE doc_id = ? ORDER BY idx`,
+      )
       .all(id) as Chunk[];
     return { doc, chunks };
   }
@@ -422,7 +448,7 @@ export class Store {
         `SELECT
            c.id AS chunk_id,
            c.doc_id, d.title AS doc_title, d.url AS doc_url, d.collection AS collection,
-           c.idx, c.text,
+           c.idx, c.text, c.section_path,
            bm25(chunks_fts) AS fts_score
          FROM chunks_fts
          JOIN chunks c ON c.id = chunks_fts.rowid
@@ -464,7 +490,7 @@ export class Store {
          SELECT
            vr.chunk_id, vr.distance AS vec_distance,
            c.doc_id, d.title AS doc_title, d.url AS doc_url, d.collection AS collection,
-           c.idx, c.text
+           c.idx, c.text, c.section_path
          FROM vr
          JOIN chunks c ON c.id = vr.chunk_id
          JOIN docs   d ON d.id = c.doc_id
@@ -506,10 +532,12 @@ export class Store {
 
 // ---------- helpers ----------
 
-function hashChunks(chunks: string[]): string {
+function hashChunks(chunks: ChunkInput[]): string {
   const h = createHash("sha256");
   for (const c of chunks) {
-    h.update(c);
+    h.update(c.text);
+    h.update("\x00");
+    h.update(c.section_path ?? "");
     h.update(" ");
   }
   return h.digest("hex");

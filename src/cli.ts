@@ -3,7 +3,9 @@ import { Command } from "commander";
 import { resolve } from "node:path";
 import { DEFAULT_COLLECTION, Store, type SearchHit, type SearchMode } from "./store.js";
 import { embedPending, ingestUrl } from "./ingest.js";
+import { crawl } from "./crawler.js";
 import { getEmbeddingProvider } from "./embeddings.js";
+import { getReranker, loadReranker, type Reranker } from "./reranker.js";
 import { startMcpServer } from "./mcp-server.js";
 
 const DEFAULT_DB = resolve(
@@ -21,11 +23,53 @@ program
   .description("Fetch a URL, extract the article, and index it")
   .option("-c, --collection <name>", "Target collection", DEFAULT_COLLECTION)
   .option("--no-embed", "Skip embeddings even if provider is configured")
+  .option("-r, --recursive", "Recursively crawl same-origin links")
+  .option("--max-depth <n>", "Max crawl depth (recursive)", "2")
+  .option("--max-pages <n>", "Max pages to crawl (recursive)", "50")
+  .option("--cross-origin", "Allow links to other origins (recursive)")
+  .option("--delay-ms <n>", "Delay between requests in ms (recursive)", "250")
+  .option("--include <regex>", "Only crawl URLs matching this regex")
+  .option("--exclude <regex>", "Skip URLs matching this regex")
   .action(async (url: string, opts, cmd) => {
     const { db } = cmd.optsWithGlobals();
     const store = new Store(db);
     try {
       const embedder = await resolveEmbedder(opts);
+
+      if (opts.recursive) {
+        const summary = await crawl(url, store, {
+          collection: opts.collection,
+          embedder,
+          maxDepth: Number(opts.maxDepth),
+          maxPages: Number(opts.maxPages),
+          sameOrigin: !opts.crossOrigin,
+          delayMs: Number(opts.delayMs),
+          include: opts.include ? new RegExp(opts.include) : undefined,
+          exclude: opts.exclude ? new RegExp(opts.exclude) : undefined,
+          onPage: (e) => {
+            const prefix = `  d${e.kind === "skipped" ? "-" : e.depth}`;
+            if (e.kind === "indexed") {
+              const embedNote = e.result.embedded > 0
+                ? `, embedded ${e.result.embedded}`
+                : "";
+              console.log(
+                `${prefix} indexed #${e.result.docId}: ${e.result.title} (${e.result.chunkCount} chunks${embedNote})\n     ${e.url}`,
+              );
+            } else if (e.kind === "unchanged") {
+              console.log(`${prefix} unchanged #${e.result.docId}: ${e.url}`);
+            } else if (e.kind === "failed") {
+              console.error(`${prefix} failed: ${e.url} — ${e.error}`);
+            } else {
+              console.log(`${prefix} skipped (${e.reason}): ${e.url}`);
+            }
+          },
+        });
+        console.log(
+          `\nCrawl summary: visited=${summary.visited} indexed=${summary.indexed} unchanged=${summary.unchanged} failed=${summary.failed} skipped=${summary.skipped}`,
+        );
+        return;
+      }
+
       const result = await ingestUrl(url, store, {
         collection: opts.collection,
         embedder,
@@ -163,6 +207,8 @@ program
   .option("-n, --limit <n>", "max results", "6")
   .option("-c, --collection <name>", "Filter by collection")
   .option("-m, --mode <mode>", "fts | vector | hybrid (default: hybrid if embeddings)")
+  .option("--rerank", "Apply cross-encoder reranker (Transformers.js)")
+  .option("--rerank-model <id>", "Override reranker model id")
   .action(async (queryParts: string[], opts, cmd) => {
     const { db } = cmd.optsWithGlobals();
     const store = new Store(db);
@@ -170,10 +216,14 @@ program
       const query = queryParts.join(" ");
       const limit = Number(opts.limit);
       const mode = (opts.mode as SearchMode | undefined) ?? autoMode(store);
+      const reranker = opts.rerank
+        ? await loadReranker(opts.rerankModel ?? process.env.PAGEBOY_RERANK_MODEL ?? "Xenova/ms-marco-MiniLM-L-6-v2")
+        : await getReranker();
 
       const hits = await runSearch(store, query, mode, {
         collection: opts.collection,
         limit,
+        reranker,
       });
       printHits(hits, mode);
     } finally {
@@ -210,22 +260,44 @@ export async function runSearch(
   store: Store,
   query: string,
   mode: SearchMode,
-  opts: { collection?: string; limit?: number },
+  opts: { collection?: string; limit?: number; reranker?: Reranker | null },
 ): Promise<SearchHit[]> {
-  if (mode === "fts") return store.ftsSearch(query, opts);
+  const limit = opts.limit ?? 6;
+  const reranker = opts.reranker ?? null;
+  const overFetch = reranker ? Math.max(limit * 4, 20) : limit;
+  const innerOpts = { collection: opts.collection, limit: overFetch };
 
-  const provider = await getEmbeddingProvider();
-  if (!store.hasEmbeddings() || !provider) {
-    if (mode === "vector") {
-      throw new Error(
-        "Semantic search needs embeddings + an embedding provider (set OPENAI_API_KEY and run `embed`).",
-      );
+  let hits: SearchHit[];
+  if (mode === "fts") {
+    hits = store.ftsSearch(query, innerOpts);
+  } else {
+    const provider = await getEmbeddingProvider();
+    if (!store.hasEmbeddings() || !provider) {
+      if (mode === "vector") {
+        throw new Error(
+          "Semantic search needs embeddings + an embedding provider (set OPENAI_API_KEY and run `embed`).",
+        );
+      }
+      hits = store.ftsSearch(query, innerOpts);
+    } else {
+      const [qvec] = await provider.embed([query]);
+      hits =
+        mode === "vector"
+          ? store.vectorSearch(qvec, innerOpts)
+          : store.hybridSearch(query, qvec, innerOpts);
     }
-    return store.ftsSearch(query, opts);
   }
-  const [qvec] = await provider.embed([query]);
-  if (mode === "vector") return store.vectorSearch(qvec, opts);
-  return store.hybridSearch(query, qvec, opts);
+
+  if (reranker && hits.length > 0) {
+    const scores = await reranker.rerank(
+      query,
+      hits.map((h) => h.text),
+    );
+    hits = hits
+      .map((h, i) => ({ ...h, rerank_score: scores[i] }))
+      .sort((a, b) => (b.rerank_score ?? 0) - (a.rerank_score ?? 0));
+  }
+  return hits.slice(0, limit);
 }
 
 function printHits(hits: SearchHit[], mode: SearchMode) {
@@ -235,14 +307,19 @@ function printHits(hits: SearchHit[], mode: SearchMode) {
   }
   console.log(`mode=${mode}, hits=${hits.length}\n`);
   for (const [i, h] of hits.entries()) {
-    const tag =
+    const baseTag =
       h.source === "fts"
         ? `bm25=${h.fts_score?.toFixed(2)}`
         : h.source === "vector"
           ? `dist=${h.vec_distance?.toFixed(3)}`
           : `rrf=${h.fused_score.toFixed(4)}`;
+    const tag =
+      h.rerank_score !== undefined
+        ? `rerank=${h.rerank_score.toFixed(3)} ${baseTag}`
+        : baseTag;
+    const section = h.section_path ? ` [${h.section_path}]` : "";
     console.log(
-      `[${i + 1}] doc #${h.doc_id} chunk ${h.idx} [${h.collection}] (${tag}) — ${h.doc_title}`,
+      `[${i + 1}] doc #${h.doc_id} chunk ${h.idx} [${h.collection}] (${tag}) — ${h.doc_title}${section}`,
     );
     console.log(`    ${h.doc_url}`);
     console.log(`    ${h.text.slice(0, 260).replace(/\s+/g, " ")}…`);

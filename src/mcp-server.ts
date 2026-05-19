@@ -2,8 +2,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { getEmbeddingProvider } from "./embeddings.js";
+import { getReranker } from "./reranker.js";
 import { ingestUrl } from "./ingest.js";
-import { Store, type SearchMode } from "./store.js";
+import { Store, type SearchHit, type SearchMode } from "./store.js";
 
 export async function startMcpServer(store: Store): Promise<void> {
   const semanticAvailable = store.hasEmbeddings();
@@ -109,9 +110,12 @@ export async function startMcpServer(store: Store): Promise<void> {
     async ({ query, collection, limit, mode }) => {
       const effectiveMode: SearchMode =
         mode ?? (store.hasEmbeddings() ? "hybrid" : "fts");
-      const opts = { collection, limit: limit ?? 6 };
+      const wantLimit = limit ?? 6;
+      const reranker = await getReranker();
+      const overFetch = reranker ? Math.max(wantLimit * 4, 20) : wantLimit;
+      const opts = { collection, limit: overFetch };
 
-      let hits;
+      let hits: SearchHit[];
       if (effectiveMode === "fts") {
         hits = store.ftsSearch(query, opts);
       } else {
@@ -134,6 +138,17 @@ export async function startMcpServer(store: Store): Promise<void> {
             : store.hybridSearch(query, qvec, opts);
       }
 
+      if (reranker && hits.length > 0) {
+        const scores = await reranker.rerank(
+          query,
+          hits.map((h) => h.text),
+        );
+        hits = hits
+          .map((h, i) => ({ ...h, rerank_score: scores[i] }))
+          .sort((a, b) => (b.rerank_score ?? 0) - (a.rerank_score ?? 0));
+      }
+      hits = hits.slice(0, wantLimit);
+
       if (hits.length === 0) {
         return {
           content: [
@@ -142,15 +157,20 @@ export async function startMcpServer(store: Store): Promise<void> {
         };
       }
       const blocks = hits.map(
-        (h, i) =>
-          `[${i + 1}] doc #${h.doc_id} chunk ${h.idx} [${h.collection}] — ${h.doc_title}\n` +
-          `    ${h.doc_url}\n\n${h.text}`,
+        (h, i) => {
+          const section = h.section_path ? ` § ${h.section_path}` : "";
+          return (
+            `[${i + 1}] doc #${h.doc_id} chunk ${h.idx} [${h.collection}] — ${h.doc_title}${section}\n` +
+            `    ${h.doc_url}\n\n${h.text}`
+          );
+        },
       );
+      const modeLabel = reranker ? `${effectiveMode}+rerank` : effectiveMode;
       return {
         content: [
           {
             type: "text",
-            text: `mode=${effectiveMode}\n\n${blocks.join("\n\n---\n\n")}`,
+            text: `mode=${modeLabel}\n\n${blocks.join("\n\n---\n\n")}`,
           },
         ],
       };
