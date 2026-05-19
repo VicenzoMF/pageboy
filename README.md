@@ -14,26 +14,68 @@ file.
 
 ## Install
 
+Node ≥ 20.
+
 ```bash
-git clone git@github.com:<you>/pageboy.git
+# From npm (recommended)
+npm install -g pageboy
+
+# Or run without installing
+npx pageboy serve
+```
+
+From source:
+
+```bash
+git clone https://github.com/VicenzoMF/pageboy.git
 cd pageboy
 npm install
 npm run build
 ```
 
-Node ≥ 20.
+### What you get by default
+
+The default install is intentionally lean — **FTS5 (BM25) full-text search
+works out of the box**, with no extra downloads:
+
+| Feature | Default | How to enable |
+|---|---|---|
+| FTS5 keyword search | ✅ | always on |
+| Section-aware chunking | ✅ | always on |
+| Recursive crawl (`--recursive`) | ✅ | always on |
+| Semantic / hybrid search | ❌ | pick an embedding provider (see below) |
+| Cross-encoder reranking (`--rerank`) | ❌ | `npm i @huggingface/transformers` |
+
+### Optional: enable semantic search and rerank
+
+Both **local embeddings** (Transformers.js) and the **cross-encoder reranker**
+share one optional dependency:
+
+```bash
+# Local, fully offline (~50 MB ONNX runtime + models on first use)
+npm install @huggingface/transformers
+```
+
+Already have Ollama or an OpenAI key? You can skip the install entirely —
+pageboy will use them instead (details in [Embeddings](#embeddings-optional-but-recommended)).
+
+> The `@huggingface/transformers` package is declared as an **optional
+> dependency**, so it does *not* install by default with `npm install -g
+> pageboy`. The package is sizable (it ships an ONNX runtime); we keep it
+> opt-in so the base CLI stays small. Install it whenever you want local
+> embeddings or reranking — pageboy auto-detects it at runtime.
 
 ## Quick start
 
 ```bash
-# Index an article
-node dist/cli.js add https://example.com/some-post
+# Index an article (FTS only, no embeddings needed)
+pageboy add https://example.com/some-post
 
 # List what you've indexed
-node dist/cli.js list
+pageboy list
 
 # Search (defaults to hybrid if embeddings exist, else FTS)
-node dist/cli.js search "what does it say about hooks"
+pageboy search "what does it say about hooks"
 ```
 
 The DB lives at `./data/pageboy.db` (override with `--db <path>` or
@@ -42,7 +84,11 @@ The DB lives at `./data/pageboy.db` (override with `--db <path>` or
 ## Wire it into Claude Code
 
 ```bash
-claude mcp add pageboy node /absolute/path/to/pageboy/dist/cli.js serve
+# If installed globally
+claude mcp add pageboy pageboy serve
+
+# Or via npx (no install required)
+claude mcp add pageboy npx pageboy serve
 ```
 
 Or add to `.mcp.json` in any project:
@@ -51,8 +97,8 @@ Or add to `.mcp.json` in any project:
 {
   "mcpServers": {
     "pageboy": {
-      "command": "node",
-      "args": ["/absolute/path/to/pageboy/dist/cli.js", "serve"]
+      "command": "npx",
+      "args": ["pageboy", "serve"]
     }
   }
 }
@@ -103,15 +149,22 @@ Same-origin is the default; pass `--cross-origin` to follow external links.
 
 ## Reranking
 
-Add `--rerank` to a search to apply a cross-encoder over the top candidates
-(default: `Xenova/ms-marco-MiniLM-L-6-v2`, ~80 MB, downloaded on first use):
+Reranking runs a cross-encoder over the top candidates to reorder them by
+true relevance to the query. It's optional, and needs the same
+`@huggingface/transformers` package as local embeddings:
 
 ```bash
+npm install @huggingface/transformers        # one-time
 pageboy search "how does the auth token rotate" --rerank
 ```
 
-For the MCP server, set `PAGEBOY_RERANK=1` in the environment to rerank on
-every call.
+Default model: `Xenova/ms-marco-MiniLM-L-6-v2` (~80 MB, downloaded on first
+use). Override with `--rerank-model <id>` or `PAGEBOY_RERANK_MODEL=...`.
+
+For the MCP server, set `PAGEBOY_RERANK=1` to rerank on every call.
+
+If `@huggingface/transformers` is **not** installed and you pass `--rerank`,
+pageboy prints a warning and falls back to the un-reranked results.
 
 ## Collections
 
@@ -135,8 +188,12 @@ pageboy picks a provider in this order:
 
 1. **OpenAI** — if `OPENAI_API_KEY` is set
 2. **Ollama** — if reachable at `http://127.0.0.1:11434` or `OLLAMA_HOST` is set
-3. **Transformers.js** — fully local, zero setup. Used by default when
-   `@huggingface/transformers` is installed (it is, in the default `npm install`).
+3. **Transformers.js** — fully local, no API. Used when
+   `@huggingface/transformers` is installed (it is **opt-in**; install with
+   `npm install @huggingface/transformers`).
+
+If none of the three is available, pageboy stays on FTS5 only — `add` and
+`search` keep working without embeddings.
 
 Force a specific provider:
 
@@ -155,6 +212,12 @@ pageboy search "paraphrased question" -m hybrid
 
 ### Transformers.js
 
+Install once:
+
+```bash
+npm install @huggingface/transformers
+```
+
 Default model: `Xenova/all-MiniLM-L6-v2` (384 dim, ~25 MB, downloaded on first
 use). To go lighter or stronger:
 
@@ -162,13 +225,9 @@ use). To go lighter or stronger:
 PAGEBOY_EMBED_MODEL=Xenova/bge-small-en-v1.5 pageboy embed
 ```
 
-If you don't want the ~50 MB ONNX runtime in your install:
-
-```bash
-npm uninstall @huggingface/transformers
-```
-
-…and rely on Ollama or OpenAI instead.
+Prefer to skip the ~50 MB ONNX runtime? Just don't install
+`@huggingface/transformers` — use Ollama or OpenAI instead, or stay on
+FTS-only search.
 
 ### OpenAI
 

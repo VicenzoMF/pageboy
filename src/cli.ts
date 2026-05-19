@@ -216,9 +216,21 @@ program
       const query = queryParts.join(" ");
       const limit = Number(opts.limit);
       const mode = (opts.mode as SearchMode | undefined) ?? autoMode(store);
-      const reranker = opts.rerank
-        ? await loadReranker(opts.rerankModel ?? process.env.PAGEBOY_RERANK_MODEL ?? "Xenova/ms-marco-MiniLM-L-6-v2")
-        : await getReranker();
+      let reranker: Reranker | null;
+      if (opts.rerank) {
+        reranker = await loadReranker(
+          opts.rerankModel ??
+            process.env.PAGEBOY_RERANK_MODEL ??
+            "Xenova/ms-marco-MiniLM-L-6-v2",
+        );
+        if (!reranker) {
+          console.error(
+            "warning: --rerank requested but @huggingface/transformers is not installed. Run: npm install @huggingface/transformers",
+          );
+        }
+      } else {
+        reranker = await getReranker();
+      }
 
       const hits = await runSearch(store, query, mode, {
         collection: opts.collection,

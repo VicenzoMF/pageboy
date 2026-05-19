@@ -1,19 +1,47 @@
 {
   "name": "pageboy",
-  "version": "0.2.0",
-  "description": "Turn any web article into a queryable MCP server. SQLite + FTS5 + optional local embeddings.",
+  "version": "0.3.0",
+  "description": "Turn any web article into a queryable MCP server. SQLite + FTS5 + optional local embeddings and cross-encoder reranking.",
   "type": "module",
   "bin": {
     "pageboy": "./dist/cli.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
-    "serve": "node dist/cli.js serve"
+    "serve": "node dist/cli.js serve",
+    "prepublishOnly": "npm run build"
   },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "rag",
+    "sqlite",
+    "fts5",
+    "sqlite-vec",
+    "embeddings",
+    "reranker",
+    "cross-encoder",
+    "claude-code",
+    "readability"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VicenzoMF/pageboy.git"
+  },
+  "homepage": "https://github.com/VicenzoMF/pageboy#readme",
+  "bugs": {
+    "url": "https://github.com/VicenzoMF/pageboy/issues"
+  },
+  "author": "VicenzoMF",
+  "license": "MIT",
   "dependencies": {
-    "@huggingface/transformers": "^4.2.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@mozilla/readability": "^0.5.0",
     "better-sqlite3": "^11.7.0",
@@ -21,6 +49,9 @@
     "jsdom": "^25.0.1",
     "sqlite-vec": "^0.1.9",
     "zod": "^3.25.0"
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^4.2.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
