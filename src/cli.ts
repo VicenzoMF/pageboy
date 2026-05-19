@@ -2,9 +2,14 @@
 import { Command } from "commander";
 import { resolve } from "node:path";
 import { DEFAULT_COLLECTION, Store, type SearchHit, type SearchMode } from "./store.js";
+import { existsSync, statSync } from "node:fs";
 import { embedPending, ingestUrl } from "./ingest.js";
 import { crawl } from "./crawler.js";
-import { getEmbeddingProvider } from "./embeddings.js";
+import {
+  getEmbeddingProvider,
+  probeOllama,
+  transformersJsAvailable,
+} from "./embeddings.js";
 import { getReranker, loadReranker, type Reranker } from "./reranker.js";
 import { startMcpServer } from "./mcp-server.js";
 
@@ -244,6 +249,14 @@ program
   });
 
 program
+  .command("doctor")
+  .description("Diagnose runtime, database, and provider availability")
+  .action(async (_opts, cmd) => {
+    const { db } = cmd.optsWithGlobals();
+    await runDoctor(db);
+  });
+
+program
   .command("serve")
   .description("Start the MCP server over stdio")
   .action(async (_opts, cmd) => {
@@ -310,6 +323,120 @@ export async function runSearch(
       .sort((a, b) => (b.rerank_score ?? 0) - (a.rerank_score ?? 0));
   }
   return hits.slice(0, limit);
+}
+
+async function runDoctor(dbPath: string): Promise<void> {
+  const lines: string[] = [];
+  const ok = (s: string) => lines.push(`  [OK]      ${s}`);
+  const warn = (s: string) => lines.push(`  [WARN]    ${s}`);
+  const miss = (s: string) => lines.push(`  [MISSING] ${s}`);
+  const info = (s: string) => lines.push(`            ${s}`);
+
+  lines.push("Runtime");
+  ok(`Node ${process.version}`);
+
+  lines.push("");
+  lines.push("Database");
+  if (existsSync(dbPath)) {
+    const stat = statSync(dbPath);
+    ok(`${dbPath} (${(stat.size / 1024).toFixed(1)} KB)`);
+    try {
+      const store = new Store(dbPath);
+      try {
+        const collections = store.listCollections();
+        const docs = collections.reduce((n, c) => n + c.doc_count, 0);
+        info(
+          `collections=${collections.length}, docs=${docs}, embeddings_dim=${store.embeddingDim() ?? "—"}, embedding_model=${store.embeddingModel() ?? "—"}`,
+        );
+      } finally {
+        store.close();
+      }
+    } catch (e) {
+      warn(`could not open DB: ${e instanceof Error ? e.message : e}`);
+    }
+  } else {
+    warn(`${dbPath} does not exist yet (run \`pageboy add <url>\` to create it)`);
+  }
+
+  lines.push("");
+  lines.push("Search backends");
+  ok("FTS5 (built into SQLite)");
+  try {
+    const probe = new Store(dbPath);
+    try {
+      if (probe.hasEmbeddings() || probe.embeddingModel() !== null) {
+        ok("sqlite-vec extension loaded");
+      } else if (probe.embeddingDim() === null) {
+        info("sqlite-vec extension loaded (no embeddings indexed yet)");
+      }
+    } finally {
+      probe.close();
+    }
+  } catch {
+    warn("sqlite-vec extension failed to load — semantic search disabled");
+  }
+
+  lines.push("");
+  lines.push("Embedding providers (used in this priority order)");
+  if (process.env.OPENAI_API_KEY) {
+    ok(
+      `OpenAI — base ${process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"}, model ${process.env.PAGEBOY_EMBED_MODEL ?? "text-embedding-3-small"}`,
+    );
+  } else {
+    miss("OpenAI — OPENAI_API_KEY not set");
+  }
+
+  const ollamaHost =
+    process.env.OLLAMA_HOST ??
+    process.env.OLLAMA_URL ??
+    "http://127.0.0.1:11434";
+  const ollamaReachable = await probeOllama(ollamaHost);
+  if (ollamaReachable) {
+    ok(`Ollama — reachable at ${ollamaHost}`);
+  } else {
+    miss(`Ollama — not reachable at ${ollamaHost}`);
+  }
+
+  const transformersInstalled = await transformersJsAvailable();
+  if (transformersInstalled) {
+    ok(
+      `Transformers.js — installed (model ${process.env.PAGEBOY_EMBED_MODEL ?? "Xenova/all-MiniLM-L6-v2"})`,
+    );
+  } else {
+    miss(
+      "Transformers.js — @huggingface/transformers not installed (npm install @huggingface/transformers)",
+    );
+  }
+
+  const provider = await getEmbeddingProvider();
+  if (provider) {
+    info(`→ active provider: ${provider.name} (${provider.model}, dim=${provider.dim})`);
+  } else {
+    info("→ no embedding provider available; search will use FTS5 only");
+  }
+
+  lines.push("");
+  lines.push("Reranker");
+  const rerankEnabled =
+    process.env.PAGEBOY_RERANK === "1" ||
+    process.env.PAGEBOY_RERANK?.toLowerCase() === "true";
+  if (rerankEnabled) {
+    if (transformersInstalled) {
+      ok(
+        `enabled — model ${process.env.PAGEBOY_RERANK_MODEL ?? "Xenova/ms-marco-MiniLM-L-6-v2"}`,
+      );
+    } else {
+      warn(
+        "PAGEBOY_RERANK is set but @huggingface/transformers is not installed",
+      );
+    }
+  } else {
+    info(
+      "disabled by default — pass --rerank to a search, or set PAGEBOY_RERANK=1",
+    );
+  }
+
+  console.log(lines.join("\n"));
 }
 
 function printHits(hits: SearchHit[], mode: SearchMode) {

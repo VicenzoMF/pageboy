@@ -1,5 +1,10 @@
 # pageboy
 
+[![CI](https://github.com/VicenzoMF/pageboy/actions/workflows/ci.yml/badge.svg)](https://github.com/VicenzoMF/pageboy/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/pageboy.svg)](https://www.npmjs.com/package/pageboy)
+[![node](https://img.shields.io/node/v/pageboy.svg)](https://nodejs.org/)
+[![license](https://img.shields.io/npm/l/pageboy.svg)](./LICENSE)
+
 Turn any web article into a queryable MCP server. Point it at a URL, it extracts
 the readable content, chunks it, indexes it, and exposes search/get tools to any
 MCP-aware client (Claude Code, Codex, etc.) — all from a single local SQLite
@@ -127,10 +132,24 @@ pageboy search <query...> [-m fts|vector|hybrid] [-c <collection>] [-n <limit>]
                           [--rerank] [--rerank-model <id>]
 pageboy refresh <id|--all> [-c <collection>] [--no-embed]
 pageboy embed [-c <collection>]
+pageboy doctor           # diagnose DB, providers, reranker, deps
 pageboy serve            # start MCP server on stdio
 ```
 
 Add `--db <path>` to any command to target a different SQLite file.
+
+## Troubleshooting
+
+Stuck? Run:
+
+```bash
+pageboy doctor
+```
+
+It prints what's working and what isn't — Node version, DB stats,
+`sqlite-vec` load state, which embedding provider is active, whether
+`@huggingface/transformers` is installed, and reranker status. Most "it
+didn't work" reports come down to one missing item in that output.
 
 ## Recursive crawl
 

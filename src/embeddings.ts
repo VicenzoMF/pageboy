@@ -83,7 +83,7 @@ const OLLAMA_DIM_DEFAULTS: Record<string, number> = {
   "bge-m3": 1024,
 };
 
-async function probeOllama(host: string): Promise<boolean> {
+export async function probeOllama(host: string): Promise<boolean> {
   try {
     const res = await fetch(`${host}/api/tags`, {
       signal: AbortSignal.timeout(800),
@@ -185,7 +185,7 @@ async function tryDynamicImport(specifiers: string[]): Promise<unknown | null> {
   return null;
 }
 
-async function transformersJsAvailable(): Promise<boolean> {
+export async function transformersJsAvailable(): Promise<boolean> {
   const mod = await tryDynamicImport([
     "@huggingface/transformers",
     "@xenova/transformers",
