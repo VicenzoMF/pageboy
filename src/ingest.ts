@@ -253,7 +253,7 @@ export async function embedPending(
 
 // ---------- chunking ----------
 
-function buildChunks(fetched: FetchedArticle): ChunkInput[] {
+export function buildChunks(fetched: FetchedArticle): ChunkInput[] {
   const sections = fetched.content_html
     ? walkSections(fetched.content_html, fetched.title)
     : [
@@ -279,7 +279,7 @@ interface Section {
   text: string;
 }
 
-function walkSections(contentHtml: string, docTitle: string): Section[] {
+export function walkSections(contentHtml: string, docTitle: string): Section[] {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>${contentHtml}</body></html>`);
   const body = dom.window.document.body;
 
@@ -337,7 +337,7 @@ function normalizeWhitespace(s: string): string {
     .trim();
 }
 
-function chunkText(text: string): string[] {
+export function chunkText(text: string): string[] {
   const paragraphs = text
     .split(/\n{2,}/)
     .map((p) => p.trim())

@@ -543,7 +543,7 @@ function hashChunks(chunks: ChunkInput[]): string {
   return h.digest("hex");
 }
 
-function toFtsQuery(raw: string): string {
+export function toFtsQuery(raw: string): string {
   const tokens = raw
     .toLowerCase()
     .replace(/["'`]/g, " ")
@@ -555,7 +555,7 @@ function toFtsQuery(raw: string): string {
   return tokens.join(" OR ");
 }
 
-function rrfFuse(
+export function rrfFuse(
   ftsHits: SearchHit[],
   vecHits: SearchHit[],
   limit: number,
