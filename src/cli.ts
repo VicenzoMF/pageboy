@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { resolve } from "node:path";
 import { DEFAULT_COLLECTION, Store, type SearchHit, type SearchMode } from "./store.js";
 import { existsSync, statSync } from "node:fs";
+import { resolveDefaultDb } from "./dbpath.js";
 import { embedPending, ingestUrl } from "./ingest.js";
 import { crawl } from "./crawler.js";
 import {
@@ -13,15 +13,17 @@ import {
 import { getReranker, loadReranker, type Reranker } from "./reranker.js";
 import { startMcpServer } from "./mcp-server.js";
 
-const DEFAULT_DB = resolve(
-  process.env.PAGEBOY_DB ?? "./data/pageboy.db",
-);
+const DEFAULT_DB = resolveDefaultDb();
 
 const program = new Command();
 program
   .name("pageboy")
   .description("Turn web articles into a queryable MCP server")
-  .option("--db <path>", "SQLite database path (env: PAGEBOY_DB)", DEFAULT_DB);
+  .option(
+    "--db <path>",
+    "SQLite database path (default: auto-discovered project DB; env: PAGEBOY_DB)",
+    DEFAULT_DB,
+  );
 
 program
   .command("add <url>")

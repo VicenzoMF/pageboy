@@ -1,6 +1,6 @@
 {
   "name": "pageboy",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Turn any web article into a queryable MCP server. SQLite + FTS5 + optional local embeddings and cross-encoder reranking.",
   "type": "module",
   "bin": {
